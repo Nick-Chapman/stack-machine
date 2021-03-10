@@ -29,7 +29,7 @@ main = do
 
   let code = runEmit (compileS s)
   --let m = load code
-  let v2 = runMachine (execute code)
+  let v2 = runExecution (execute code)
 
   print v2
 
@@ -251,15 +251,22 @@ p0 = Printed []
 -}
 
 
-execute :: Code -> Machine ()
+execute :: Code -> Execution ()
 execute ops = sequence_ (map execute0 ops)
 
-execute0 :: Op -> Machine ()
+execute0 :: Op -> Execution ()
 execute0 = \case
+  NUM{} -> undefined
+  LOAD{} -> undefined Set Get
+  PRINT{} -> undefined XPrint
   ADD -> do
     v1 <- Pop
     v2 <- Pop
     Push (v1+v2)
+  SUB -> undefined
+  MUL -> undefined
+  JMP{} -> undefined
+  JMPIF0{} -> undefined
 
 
 
@@ -277,7 +284,9 @@ data Execution a where
   Get :: Name -> Execution Value
 
 runExecution :: Execution () -> [Value]
-runExecution code exe = loop (load code)
+runExecution = undefined Machine stack ip
 
 
-data Machine = Machine { stack :: [Value],  :: [Op] }
+data Machine = Machine { stack :: [Value], ip :: IP }
+
+data IP
