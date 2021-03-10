@@ -10,12 +10,7 @@ main :: IO ()
 main = do
   putStrLn "*stack-machine*"
   let x = Name "x"
-  --let exp = Add (Num 1) (Add (Var x) (Num 2))
   let env = emptyEnv
-  --let v = eval env exp
-
-  --print exp
-  --print v
 
   let s = seq [ Assign x (Num 13),
                 Print (Var x),
@@ -25,14 +20,11 @@ main = do
 
   let _s = fact 5
   print s
-  print (exec env s)
+  print (evalS env s)
 
   let code = runEmit (compileS s)
-  --let m = load code
-  let v2 = runExecution (execute code)
-
+  let v2 = runExecution code
   print v2
-
   pure ()
 
 
@@ -84,8 +76,8 @@ instance Show Name where show (Name x) = x
 type Value = Int
 
 
-exec :: Env -> Stat -> [Value]
-exec env0 s = snd (loop env0 s) where
+evalS :: Env -> Stat -> [Value]
+evalS env0 s = snd (loop env0 s) where
 
   loop :: Env -> Stat -> (Env,[Value])
   loop q = \case
@@ -142,15 +134,6 @@ updateEnv :: Env -> Name -> Value -> Env
 updateEnv (Env m) x v = Env (Map.insert x v m)
 
 
-{-compile :: Exp -> Code
-compile = \case
-  Num n -> [NUM n]
-  Add e1 e2 -> compile e1 ++ compile e2 ++ [ADD]
-  Mul e1 e2 -> compile e1 ++ compile e2 ++ [MUL]
-  Var x -> [LOAD x]
--}
-
-
 compileS :: Stat -> Emit ()
 compileS = \case
     Null -> pure ()
@@ -158,13 +141,13 @@ compileS = \case
     Seq s1 s2 -> do
       undefined s1 s2
     Assign x exp -> do
-      undefined x exp
+      undefined x exp STORE
     Print exp -> do
       compileE exp
       Emit PRINT
 
     Repeat{} -> do
-      undefined
+      undefined Here
 
 compileE :: Exp -> Emit ()
 compileE = \case
@@ -196,6 +179,9 @@ data Emit a where
   Ret :: a -> Emit a
   Bind :: Emit a -> (a -> Emit b) -> Emit b
   Emit :: Op -> Emit ()
+  Here :: Emit AbsOffset
+
+newtype AbsOffset = AbsOffset Int deriving Show
 
 runEmit :: Emit () -> Code
 runEmit = undefined
@@ -203,61 +189,28 @@ runEmit = undefined
 
 type Code = [Op]
 
-data Op = MUL | ADD | SUB | NUM Int | LOAD Name | PRINT | JMP RelOffset | JMPIF0 RelOffset
+data Op = MUL | ADD | SUB | NUM Int | LOAD Name | STORE Name | PRINT | JMP RelOffset | JMPIF0 RelOffset
   deriving Show
 
-newtype RelOffset = RelOffset Int deriving Show
+newtype RelOffset = RelOffset Int deriving (Show,Num)
 
 
---data Machine = Machine { stack :: [Value], code :: [Op] }
 
---load :: Code -> Machine
---load code = Machine { stack = [], code }
-
-{-
-
-execute :: Machine -> Printed
-execute Machine{stack=stack0,code=code0} = head (loop printed0 stack0 code0) where
-
-  env = emptyEnv
-
-  loop :: Printed -> [Value] -> [Op] -> ([Value],Printed)
-  loop printed stack = \case
-    op1:ops -> do
-      let (stack',printed') = step op1 stack
-      loop printed' stack' ops
-    [] -> stack
-
-  step :: Printed -> Op -> [Value] -> ([Value],Printed)
-  step = \case
-    NUM n -> \stack -> (n:stack, p0)
-    LOAD x -> \stack -> lookEnv env x : stack
-    ADD -> \case
-      v1:v2:stack -> ((v2+v1):stack, p0)
-      _ -> error "step:ADD"
-    SUB -> \case
-      v1:v2:stack -> ((v2-v1):stack, p0)
-      _ -> error "step:SUB"
-    MUL -> \case
-      v1:v2:stack -> ((v2*v1):stack, p0)
-      _ -> error "step:MUL"
-    JMP{} -> undefined
-    JMPIF0{} -> undefined
-
-newtype Printed = Printed [Value]
-
-prin0 :: Printed
-p0 = Printed []
--}
+fetchExecLoop :: Execution ()
+fetchExecLoop = do
+  FetchOp >>= \case
+    Nothing -> pure () -- machine halts
+    Just op -> do
+      JumpRelative 1
+      executeOp op
+      fetchExecLoop
 
 
-execute :: Code -> Execution ()
-execute ops = sequence_ (map execute0 ops)
-
-execute0 :: Op -> Execution ()
-execute0 = \case
+executeOp :: Op -> Execution ()
+executeOp = \case
   NUM{} -> undefined
-  LOAD{} -> undefined Set Get
+  LOAD{} -> undefined Get
+  STORE{} -> undefined Set
   PRINT{} -> undefined XPrint
   ADD -> do
     v1 <- Pop
@@ -283,10 +236,15 @@ data Execution a where
   Set :: Name -> Value -> Execution ()
   Get :: Name -> Execution Value
 
-runExecution :: Execution () -> [Value]
-runExecution = undefined Machine stack ip
+  FetchOp :: Execution (Maybe Op)
+  JumpRelative :: RelOffset -> Execution ()
 
+runExecution :: Code -> [Value]
+runExecution = undefined fetchExecLoop Machine env stack IP ip loop
+  where
+    loop :: Machine -> Execution a -> (Machine -> [Value]) -> [Value]
+    loop = undefined
 
-data Machine = Machine { stack :: [Value], ip :: IP }
+data Machine = Machine { env :: Env, stack :: [Value], ip :: IP }
 
-data IP
+newtype IP = IP Int -- instruction pointer
