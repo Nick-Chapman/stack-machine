@@ -12,18 +12,19 @@ main = do
   let x = Name "x"
   let env = emptyEnv
 
-  let s = seq [ Assign x (Num 13),
+  let _s = seq [ Assign x (Num 13),
                 Print (Var x),
                 Assign x (Add (Var x) (Var x)),
                 Print (Var x)
               ]
 
-  let _s = fact 5
+  let s = fact 5
   print s
   print (evalS env s)
 
   let code = runEmit (compileS s)
-  let v2 = runExecution code
+  print code
+  v2 <- runExecution code
   print v2
   pure ()
 
@@ -122,7 +123,7 @@ eval env = \case
   Var x -> lookEnv env x
 
 
-newtype Env = Env (Map Name Value)
+newtype Env = Env (Map Name Value) deriving Show
 
 emptyEnv :: Env
 emptyEnv = Env Map.empty
@@ -137,17 +138,22 @@ updateEnv (Env m) x v = Env (Map.insert x v m)
 compileS :: Stat -> Emit ()
 compileS = \case
     Null -> pure ()
-
     Seq s1 s2 -> do
-      undefined s1 s2
+      compileS s1
+      compileS s2
     Assign x exp -> do
-      undefined x exp STORE
+      compileE exp
+      Emit (STORE x)
     Print exp -> do
       compileE exp
       Emit PRINT
+    Repeat stat pred -> do
+      AbsOffset a <- Here
+      compileS stat
+      compileP pred
+      AbsOffset b <- Here
+      Emit (JMPIF0 (RelOffset (a - b)))
 
-    Repeat{} -> do
-      undefined Here
 
 compileE :: Exp -> Emit ()
 compileE = \case
@@ -169,6 +175,13 @@ compileE = \case
     compileE e2
     Emit MUL
 
+compileP :: Pred -> Emit ()
+compileP = \case
+  PredEq e1 e2 -> do
+    compileE e1
+    compileE e2
+    Emit EQUAL
+
 
 
 instance Functor Emit where fmap = liftM
@@ -181,47 +194,46 @@ data Emit a where
   Emit :: Op -> Emit ()
   Here :: Emit AbsOffset
 
-newtype AbsOffset = AbsOffset Int deriving Show
+newtype AbsOffset = AbsOffset Int deriving (Num,Show)
 
-runEmit :: Emit () -> Code
-runEmit = undefined
+runEmit :: Emit () -> [Op]
+runEmit e0 = loop (AbsOffset 0) e0 (\_ () -> []) where
+  loop :: AbsOffset -> Emit a -> (AbsOffset -> a -> [Op]) -> [Op]
+  loop off e k = case e of
+    Ret x -> k off x
+    Bind e f -> loop off e $ \off a -> loop off (f a) k
+    Emit op -> op : k (off + 1) ()
+    Here -> k off off
 
 
 type Code = [Op]
 
-data Op = MUL | ADD | SUB | NUM Int | LOAD Name | STORE Name | PRINT | JMP RelOffset | JMPIF0 RelOffset
+data Op = EQUAL | MUL | ADD | SUB | NUM Int | LOAD Name | STORE Name | PRINT | JMP RelOffset | JMPIF0 RelOffset
   deriving Show
 
 newtype RelOffset = RelOffset Int deriving (Show,Num)
 
 
-
-fetchExecLoop :: Execution ()
-fetchExecLoop = do
-  FetchOp >>= \case
-    Nothing -> pure () -- machine halts
-    Just op -> do
-      JumpRelative 1
-      executeOp op
-      fetchExecLoop
-
-
 executeOp :: Op -> Execution ()
 executeOp = \case
-  NUM{} -> undefined
-  LOAD{} -> undefined Get
-  STORE{} -> undefined Set
-  PRINT{} -> undefined XPrint
-  ADD -> do
-    v1 <- Pop
-    v2 <- Pop
-    Push (v1+v2)
-  SUB -> undefined
-  MUL -> undefined
+  NUM n -> Push n
+  LOAD x -> Get x >>= Push
+  STORE x  -> Pop >>= Set x
+  PRINT -> do v <- Pop; XPrint v
+  EQUAL -> binary (\v1 v2 -> if v1 == v2 then 1 else 0)
+  ADD -> binary (+)
+  SUB -> binary (-)
+  MUL -> binary (*)
   JMP{} -> undefined
-  JMPIF0{} -> undefined
+  JMPIF0 rel -> do
+    v <- Pop
+    if v == 0 then JumpRelative rel else pure ()
 
-
+binary :: (Value -> Value -> Value) -> Execution ()
+binary f = do
+  v2 <- Pop
+  v1 <- Pop
+  Push (f v1 v2)
 
 instance Functor Execution where fmap = liftM
 instance Applicative Execution where pure = return; (<*>) = ap
@@ -235,16 +247,45 @@ data Execution a where
   Pop :: Execution Value
   Set :: Name -> Value -> Execution ()
   Get :: Name -> Execution Value
-
   FetchOp :: Execution (Maybe Op)
   JumpRelative :: RelOffset -> Execution ()
 
-runExecution :: Code -> [Value]
-runExecution = undefined fetchExecLoop Machine env stack IP ip loop
+fetchExecLoop :: Execution ()
+fetchExecLoop = do
+  FetchOp >>= \case
+    Nothing -> pure () -- machine halts
+    Just op -> do
+      executeOp op
+      fetchExecLoop
+
+runExecution :: Code -> IO [Value]
+runExecution code = loop machine0 fetchExecLoop $ (\_ _ -> pure [])
   where
-    loop :: Machine -> Execution a -> (Machine -> [Value]) -> [Value]
-    loop = undefined
+    loop :: Machine -> Execution a -> (Machine -> a -> IO [Value]) -> IO [Value]
+    loop m x k = do
+      --print m
+      loop' m x k
 
-data Machine = Machine { env :: Env, stack :: [Value], ip :: IP }
+    loop' :: Machine -> Execution a -> (Machine -> a -> IO [Value]) -> IO [Value]
+    loop' m@Machine{env,stack,ip=IP ip} exe k = case exe of
+      XRet x -> k m x
+      XBind e f -> loop m e $ \m a -> loop m (f a) k
+      XPrint v -> do
+        vs <- k m ()
+        pure (v:vs)
+      Push v -> k m { stack = v : stack } ()
+      Pop -> case stack of [] -> error "Pop"; v:stack -> k m {stack} v
+      Set x v -> k m { env = updateEnv env x v } ()
+      Get x -> k m (lookEnv env x)
+      FetchOp -> do
+        let opm = (if ip >= length code || ip < 0 then Nothing else Just (code !! ip))
+        --print opm
+        k m { ip = IP (ip + 1) } opm
+      JumpRelative (RelOffset n) -> k m { ip = IP (ip + n - 1) } ()
 
-newtype IP = IP Int -- instruction pointer
+
+data Machine = Machine { env :: Env, stack :: [Value], ip :: IP } deriving Show
+machine0 :: Machine
+machine0 = Machine { env = emptyEnv, stack = [], ip = IP 0 }
+
+newtype IP = IP Int deriving Show -- instruction pointer
